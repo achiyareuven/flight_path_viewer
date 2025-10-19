@@ -74,16 +74,16 @@ class MapView:
             points: List[Tuple[float, float]] = await asyncio.to_thread(reader.read_gps_data)
 
             if not points:
-                status_text.value = "לא נמצאו נקודות בקובץ."
+                status_text.value = "No points were found in the file."
                 logger.warning("No GPS points found in file.")
                 return
 
             logger.info(f"Successfully read {len(points)} GPS points.")
             self._draw_path_on_map(points, flight_map, polyline_ref, marker_ref)
-            status_text.value = f"נטענו {len(points)} נקודות"
+            status_text.value = f" {len(points)} points loaded"
 
         except Exception as ex:
-            status_text.value = f"שגיאה בקריאת הקובץ: {ex}"
+            status_text.value = f"Error reading file: {ex}"
             logger.error(f"Error while reading or drawing file '{file_path}': {ex}", exc_info=True)
 
         finally:
