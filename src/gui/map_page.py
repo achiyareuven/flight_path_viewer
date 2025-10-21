@@ -1,10 +1,10 @@
 import asyncio
-from typing import List, Tuple, Optional
+from typing import List, Optional, Tuple
 
 import flet as ft
-import flet_map as map
+import flet_map as fmap
 
-from src.business_logic.reader import MavlinkReader
+from src.business_logic.bin_reader import MavlinkReader
 from src.utils.logger import Logger
 
 logger = Logger.get_logger(__name__)
@@ -13,97 +13,65 @@ logger = Logger.get_logger(__name__)
 class MapView:
     """
     Displays the map screen with the flight path from a BIN file.
-    Calls MavlinkReader to load GPS data and draw it on the map.
+    Handles asynchronous loading of GPS points and updates the UI accordingly.
     """
-    def __init__(self,page)-> None:
-        self.page=page
-        self.page.title = " path map "
 
-        self.status_text = ft.Text("points loading… ")
-        self.progress_bar = ft.ProgressBar(width=320, value=None)
+    def __init__(self, page: ft.Page) -> None:
+        """Initialize the map view and its UI elements."""
+        self.page = page
+        self.page.title = "path map"
 
-        self.polyline_ref: ft.Ref[map.PolylineLayer] = ft.Ref[map.PolylineLayer]()
-        self.marker_ref: ft.Ref[map.MarkerLayer] = ft.Ref[map.MarkerLayer]()
+        self.status_text = ft.Text("points loading…")
+        self.progress_bar = ft.ProgressBar(width=320, value=None, visible=True)
 
-        self.flight_map = self._build_map(self.polyline_ref, self.marker_ref)
+        self.polyline_ref: ft.Ref[fmap.PolylineLayer] = ft.Ref[fmap.PolylineLayer]()
+        self.marker_ref: ft.Ref[fmap.MarkerLayer] = ft.Ref[fmap.MarkerLayer]()
+        self.flight_map: fmap.Map = self._build_map(self.polyline_ref, self.marker_ref)
 
-        # start loading if path exists
-        file_path: Optional[str] = self.page.session.get("file_path")
-        if not file_path:
-            logger.warning("No file path found in session — show fallback.")
-            self._fallback_view = self._build_no_file_view()
-            self._layout = None
-        else:
-            logger.info(f"Opening map view for file: {file_path}")
-            self._fallback_view = None
-            self._layout = self._build_layout(
-                self._build_back_button(),
-                self.status_text,
-                self.progress_bar,
-                self.flight_map,
-            )
+        self.page.run_task(self._load_and_draw_async)
 
-            async def task():
-                await self._load_and_draw_async(
-                    file_path, self.flight_map, self.polyline_ref, self.marker_ref,
-                    self.status_text, self.progress_bar, self.page
-                )
+    def build(self) -> list[ft.Control]:
+        """Assembles the map view layout (toolbar, status, progress, map)."""
+        top_bar = ft.Row(
+            controls=[self._build_back_button()],
+            alignment=ft.MainAxisAlignment.START,
+        )
 
-            # run async task
-            self.page.run_task(task)
+        return [
+            top_bar,
+            self.status_text,
+            self.progress_bar,
+            ft.Container(self.flight_map, expand=True),
+        ]
 
-    def view(self) -> ft.View:
-        if self._fallback_view:
-            return self._fallback_view
-        return ft.View(route="/map", controls=[ft.Container(self._layout, padding=10, expand=True)])
-
-    async def _load_and_draw_async(
-        self,
-        file_path: str,
-        flight_map: map.Map,
-        polyline_ref: ft.Ref[map.PolylineLayer],
-        marker_ref: ft.Ref[map.MarkerLayer],
-        status_text: ft.Text,
-        progress_bar: ft.ProgressBar,
-        page: ft.Page,
-    ):
-        """Loads the GPS points from the file, draws the route on the map, and updates the UI."""
+    async def _load_and_draw_async(self) -> None:
         try:
-            logger.info(f"Starting to read GPS data from {file_path}")
-            reader = MavlinkReader(file_path)
-            points: List[Tuple[float, float]] = await asyncio.to_thread(reader.read_gps_data)
-
-            if not points:
-                status_text.value = "No points were found in the file."
-                logger.warning("No GPS points found in file.")
+            self._update_status("Loading GPS points…", show_progress=True)
+            file_path: Optional[str] = self.page.session.get("file_path")
+            if not file_path:
+                self._update_status("No file selected.", show_progress=False)
                 return
 
-            logger.info(f"Successfully read {len(points)} GPS points.")
-            self._draw_path_on_map(points, flight_map, polyline_ref, marker_ref)
-            status_text.value = f" {len(points)} points loaded"
+            points = await asyncio.to_thread(self.get_points)
 
+            if not points or len(points) == 0:
+                self._update_status("No GPS points found in the file.", show_progress=False)
+                return
+
+            self._draw_path_on_map(points)
+            self._update_status(f"Loaded {len(points)} points.", show_progress=False)
         except Exception as ex:
-            status_text.value = f"Error reading file: {ex}"
-            logger.error(f"Error while reading or drawing file '{file_path}': {ex}", exc_info=True)
+                logger.error(f"Error while drawing map: {ex}", exc_info=True)
+                self._update_status("Error drawing the map.", show_progress=False)
 
-        finally:
-            progress_bar.visible = False
-            page.update()
-            logger.debug("Map rendering completed, progress bar hidden.")
+    def _draw_path_on_map(self, points: List[Tuple[float, float]]) -> None:
+        if not points:
+            return
 
-    def _draw_path_on_map(
-        self,
-        points: List[Tuple[float, float]],
-        flight_map: map.Map,
-        polyline_ref: ft.Ref[map.PolylineLayer],
-        marker_ref: ft.Ref[map.MarkerLayer],
-    ):
+        coords = [fmap.MapLatitudeLongitude(lat, lng) for lat, lng in points]
 
-        coords = [map.MapLatitudeLongitude(lat, lng) for lat, lng in points]
-
-        # path line
-        polyline_ref.current.polylines = [
-            map.PolylineMarker(
+        self.polyline_ref.current.polylines = [
+            fmap.PolylineMarker(
                 coordinates=coords,
                 border_stroke_width=3,
                 border_color=ft.Colors.BLUE,
@@ -111,70 +79,63 @@ class MapView:
             )
         ]
 
-
-        marker_ref.current.markers = [
-            map.Marker(
-                content=ft.Icon(ft.Icons.PLAY_ARROW, color=ft.Colors.GREEN),
+        self.marker_ref.current.markers = [
+            fmap.Marker(
+                content=ft.Icon(ft.Icons.PLAY_ARROW, tooltip="Start", color=ft.Colors.GREEN),
                 coordinates=coords[0],
             ),
-            map.Marker(
-                content=ft.Icon(ft.Icons.FLAG, color=ft.Colors.RED),
+            fmap.Marker(
+                content=ft.Icon(ft.Icons.FLAG, tooltip="End", color=ft.Colors.RED),
                 coordinates=coords[-1],
             ),
         ]
 
-        # move map to start point
-        flight_map.move_to(destination=coords[0], zoom=10)
+        self.flight_map.move_to(destination=coords[0], zoom=10)
+        self.page.update()
 
-
-    def _build_map(self, polyline_ref: ft.Ref[map.PolylineLayer], marker_ref: ft.Ref[map.MarkerLayer]) -> map.Map:
-        """Creates the map object with base layers."""
-        logger.debug("Building base map with TileLayer, PolylineLayer, and MarkerLayer.")
-
-        return map.Map(
+    def _build_map(self,polyline_ref: ft.Ref[fmap.PolylineLayer],marker_ref: ft.Ref[fmap.MarkerLayer],) -> fmap.Map:
+        return fmap.Map(
             expand=True,
-            initial_center=map.MapLatitudeLongitude(31, 36),
+            initial_center=fmap.MapLatitudeLongitude(31.0, 36.0),
             initial_zoom=8,
-            interaction_configuration=map.MapInteractionConfiguration(
-                flags=map.MapInteractiveFlag.ALL
+            interaction_configuration=fmap.MapInteractionConfiguration(
+                flags=fmap.MapInteractiveFlag.ALL
             ),
             layers=[
-                map.TileLayer(
+                fmap.TileLayer(
                     url_template="https://tile.openstreetmap.org/{z}/{x}/{y}.png",
-                    on_image_error=lambda e: logger.warning(f"TileLayer Error: {e}"),
                 ),
-                map.PolylineLayer(ref=polyline_ref, polylines=[]),
-                map.MarkerLayer(ref=marker_ref, markers=[]),
-            ]
+                fmap.PolylineLayer(ref=polyline_ref, polylines=[]),
+                fmap.MarkerLayer(ref=marker_ref, markers=[]),
+            ],
         )
+
+    def get_points(self) -> List[Tuple[float, float]]:
+        try:
+            file_path: Optional[str] = self.page.session.get("file_path")
+            if not file_path:
+                logger.warning("get_points called without a file_path in session.")
+                return []
+
+            reader = MavlinkReader(file_path)
+            points = reader.read_gps_data()
+
+            if not points:
+                return []
+
+            return points
+        except Exception as ex:
+            logger.error(f"Error while reading points: {ex}", exc_info=True)
+            return []
+
     def _build_back_button(self) -> ft.OutlinedButton:
-        """Creates a back button to the main screen."""
-        return ft.OutlinedButton("beck", icon=ft.Icons.ARROW_BACK, on_click=lambda _: self.page.go("/"))
-
-    def _build_layout(self, back_button, status_text, progress_bar, flight_map) -> ft.Column:
-        return ft.Column(
-            controls=[
-                ft.Row([back_button], alignment=ft.MainAxisAlignment.START),
-                status_text,
-                progress_bar,
-                ft.Container(flight_map, expand=True),
-            ],
-            expand=True,
-            spacing=10,
+        return ft.OutlinedButton(
+            text="back",
+            icon=ft.Icons.ARROW_BACK,
+            on_click=lambda _: self.page.go("/"),
         )
 
-    def _build_no_file_view(self) -> ft.View:
-        return ft.View(
-            route="/map",
-            controls=[
-                ft.Column(
-                    [
-                        ft.Text("no file selected. return to the main screen."),
-                        ft.OutlinedButton("beck", icon=ft.Icons.ARROW_BACK, on_click=lambda _: self.page.go("/")),
-                    ],
-                    spacing=12,
-                    horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-                )
-            ],
-        )
-
+    def _update_status(self, message: str, show_progress: bool = True) -> None:
+        self.status_text.value = message
+        self.progress_bar.visible = show_progress
+        self.page.update()
