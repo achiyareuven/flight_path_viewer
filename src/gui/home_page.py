@@ -7,7 +7,7 @@ from src.utils.logger import Logger
 logger = Logger.get_logger(name=__name__)
 
 
-class HomeView:
+class HomePage:
     """
     Page for selecting a .bin flight file
     Saves the path in session and navigates to /map
