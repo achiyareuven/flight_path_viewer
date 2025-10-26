@@ -1,16 +1,17 @@
 import asyncio
-from typing import List, Optional, Tuple
+from typing import Optional
 
 import flet as ft
 import flet_map as fmap
+import pandas as pd
 
-from src.business_logic.bin_reader import MavlinkReader
+from src.business_logic.bin_reader import BinReader
 from src.utils.logger import Logger
 
 logger = Logger.get_logger(__name__)
 
 
-class MapView:
+class MapPage:
     """
     Displays the map screen with the flight path from a BIN file.
     Handles asynchronous loading of GPS points and updates the UI accordingly.
@@ -54,21 +55,21 @@ class MapView:
 
             points = await asyncio.to_thread(self.get_points)
 
-            if not points or len(points) == 0:
+            if points.empty:
                 self._update_status("No GPS points found in the file.", show_progress=False)
                 return
 
             self._draw_path_on_map(points)
             self._update_status(f"Loaded {len(points)} points.", show_progress=False)
         except Exception as ex:
-                logger.error(f"Error while drawing map: {ex}", exc_info=True)
-                self._update_status("Error drawing the map.", show_progress=False)
+            logger.error(f"Error while drawing map: {ex}", exc_info=True)
+            self._update_status("Error drawing the map.", show_progress=False)
 
-    def _draw_path_on_map(self, points: List[Tuple[float, float]]) -> None:
-        if not points:
+    def _draw_path_on_map(self, points: pd.DataFrame) -> None:
+        if points.empty:
             return
 
-        coords = [fmap.MapLatitudeLongitude(lat, lng) for lat, lng in points]
+        coords = [fmap.MapLatitudeLongitude(lat, lng) for lat, lng in zip(points["lat"], points["lng"])]
 
         self.polyline_ref.current.polylines = [
             fmap.PolylineMarker(
@@ -93,14 +94,16 @@ class MapView:
         self.flight_map.move_to(destination=coords[0], zoom=10)
         self.page.update()
 
-    def _build_map(self,polyline_ref: ft.Ref[fmap.PolylineLayer],marker_ref: ft.Ref[fmap.MarkerLayer],) -> fmap.Map:
+    def _build_map(
+        self,
+        polyline_ref: ft.Ref[fmap.PolylineLayer],
+        marker_ref: ft.Ref[fmap.MarkerLayer],
+    ) -> fmap.Map:
         return fmap.Map(
             expand=True,
             initial_center=fmap.MapLatitudeLongitude(31.0, 36.0),
             initial_zoom=8,
-            interaction_configuration=fmap.MapInteractionConfiguration(
-                flags=fmap.MapInteractiveFlag.ALL
-            ),
+            interaction_configuration=fmap.MapInteractionConfiguration(flags=fmap.MapInteractiveFlag.ALL),
             layers=[
                 fmap.TileLayer(
                     url_template="https://tile.openstreetmap.org/{z}/{x}/{y}.png",
@@ -110,23 +113,24 @@ class MapView:
             ],
         )
 
-    def get_points(self) -> List[Tuple[float, float]]:
+    def get_points(self) -> pd.DataFrame:
         try:
             file_path: Optional[str] = self.page.session.get("file_path")
             if not file_path:
                 logger.warning("get_points called without a file_path in session.")
-                return []
+                return pd.DataFrame(columns=["lat", "lng"])
 
-            reader = MavlinkReader(file_path)
-            points = reader.read_gps_data()
+            reader = BinReader(file_path)
+            points = reader.run_get_sample_df()
 
-            if not points:
-                return []
+            if points.empty:
+                logger.info("No GPS points extracted from the file.")
+                return pd.DataFrame(columns=["lat", "lng"])
 
             return points
         except Exception as ex:
             logger.error(f"Error while reading points: {ex}", exc_info=True)
-            return []
+            return pd.DataFrame(columns=["lat", "lng"])
 
     def _build_back_button(self) -> ft.OutlinedButton:
         return ft.OutlinedButton(
