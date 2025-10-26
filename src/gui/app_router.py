@@ -23,7 +23,6 @@ class AppRouter:
     # ---------- Events ----------
     def route_change(self, _: ft.RouteChangeEvent) -> None:
         self.page.views.clear()
-        # TODO : Init the class before using it
         if self.page.route == "/":
             home_screen = HomePage(self.page)
             self.page.views.append(ft.View("/", controls=home_screen.build()))
